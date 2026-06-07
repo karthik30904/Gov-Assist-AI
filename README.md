@@ -27,8 +27,8 @@ storage/                 Structured JSONL storage and version metadata
 
 ```bash
 uv sync
-playwright install
-python -m crawler.crawler --query "student scholarship" --limit 10
+uv run playwright install
+uv run python scripts/ingest_myscheme.py --query "student scholarship" --limit 50
 ```
 
 Run the Chainlit app:

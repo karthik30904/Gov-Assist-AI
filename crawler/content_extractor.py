@@ -26,6 +26,8 @@ class ContentExtractor:
         text = normalize_text(soup.get_text(" ", strip=True))
         metadata = extract_metadata(soup, source_url)
         sections = self._extract_sections(soup)
+        if not any(sections.values()):
+            sections = self._extract_sections_from_text(text)
 
         scheme_name = self._first_text(
             soup,
@@ -123,3 +125,33 @@ class ContentExtractor:
                 seen.add(value)
                 output.append(value)
         return output
+
+    def _extract_sections_from_text(self, text: str) -> dict[str, list[str]]:
+        sections = {key: [] for key in SECTION_ALIASES}
+        labels = {
+            "benefits": r"benefits?",
+            "eligibility": r"eligibility|eligible",
+            "required_documents": r"documents required|required documents|documents",
+            "application_process": r"application process|how to apply|process",
+        }
+        ordered = list(labels.items())
+        lowered = text.lower()
+
+        for index, (section, pattern) in enumerate(ordered):
+            match = re.search(pattern, lowered)
+            if not match:
+                continue
+            end = len(text)
+            for _, next_pattern in ordered[index + 1 :]:
+                next_match = re.search(next_pattern, lowered[match.end() :])
+                if next_match:
+                    end = match.end() + next_match.start()
+                    break
+            snippet = text[match.end() : end].strip(" :-")
+            if snippet:
+                sections[section] = self._dedupe(self._split_sentences(snippet))
+        return sections
+
+    def _split_sentences(self, text: str) -> list[str]:
+        pieces = re.split(r"(?<=[.;])\s+|\s+[•]\s+|\n+", text)
+        return [normalize_text(piece) for piece in pieces if len(normalize_text(piece)) > 20]
