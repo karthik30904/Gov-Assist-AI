@@ -26,9 +26,15 @@ storage/                 Structured JSONL storage and version metadata
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
+uv sync
 playwright install
 python -m crawler.crawler --query "student scholarship" --limit 10
+```
+
+Run the Chainlit app:
+
+```bash
+uv run chainlit run chainlit_app.py -w
 ```
 
 Read `ARCHITECTURE.md`, `PROJECT_FLOW.md`, `CRAWLING_ARCHITECTURE.md`, `AGENT_DESIGN.md`, and `DECISIONS.md` for the full design.
