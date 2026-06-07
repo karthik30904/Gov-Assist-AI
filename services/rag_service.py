@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from crawler import MySchemeCrawler
+from llm import QwenClient
 from models import Scheme
 from retrieval import ChromaSchemeStore, chunk_scheme
 from storage import JsonSchemeStore
@@ -16,6 +18,9 @@ class RagAnswer:
     sources: list[str]
     crawled: int
     retrieved: int
+    model_used: str
+    llm_used: bool
+    warning: str | None = None
 
 
 class SchemeRagService:
@@ -24,39 +29,74 @@ class SchemeRagService:
         scheme_store: JsonSchemeStore | None = None,
         vector_store: ChromaSchemeStore | None = None,
         crawler: MySchemeCrawler | None = None,
+        llm: QwenClient | None = None,
+        crawl_timeout_seconds: int = 75,
     ) -> None:
         self.scheme_store = scheme_store or JsonSchemeStore(Path("data/schemes.jsonl"))
         self.vector_store = vector_store or ChromaSchemeStore()
         self.crawler = crawler or MySchemeCrawler(store=self.scheme_store)
+        self.llm = llm or QwenClient(model="qwen2.5:14b")
+        self.crawl_timeout_seconds = crawl_timeout_seconds
 
     async def answer(self, query: str, top_k: int = 8) -> RagAnswer:
         await self._ensure_indexed()
         results = self.vector_store.query(query, top_k=top_k)
 
         crawled = 0
+        warning = None
         if self._needs_fresh_research(results):
-            schemes = await self.crawler.crawl(query=query, limit=20)
-            crawled = len(schemes)
-            self._index_schemes(schemes)
+            try:
+                schemes = await asyncio.wait_for(
+                    self.crawler.crawl(query=query, limit=12),
+                    timeout=self.crawl_timeout_seconds,
+                )
+                crawled = len(schemes)
+                self._index_schemes(schemes)
+            except TimeoutError:
+                warning = (
+                    f"Fresh myScheme crawl timed out after {self.crawl_timeout_seconds}s. "
+                    "I answered from the evidence already indexed in ChromaDB."
+                )
             results = self.vector_store.query(query, top_k=top_k)
 
         if not results:
             return RagAnswer(
                 answer=(
-                    "I could not find reliable scheme evidence yet. Run a broader crawl first, for example:\n\n"
-                    "`uv run python -m crawler.crawler --query \"education scholarship\" --limit 50`\n\n"
-                    "Then ask again so I can answer from indexed myScheme sources."
+                    "I could not find reliable myScheme evidence in ChromaDB for this question yet.\n\n"
+                    "Please run ingestion first:\n\n"
+                    "`uv run python scripts/ingest_myscheme.py --query \"student scholarship\" --limit 50`\n\n"
+                    "Then ask again. This prevents me from inventing an answer without official evidence."
                 ),
                 sources=[],
                 crawled=crawled,
                 retrieved=0,
+                model_used=self.llm.model,
+                llm_used=False,
+                warning=warning,
             )
 
+        llm_result = await self.llm.generate_grounded_answer(query=query, evidence=results)
+        if llm_result.text:
+            return RagAnswer(
+                answer=llm_result.text,
+                sources=self._sources(results),
+                crawled=crawled,
+                retrieved=len(results),
+                model_used=llm_result.model,
+                llm_used=True,
+                warning=warning,
+            )
+
+        fallback = self._compose_answer(query, results)
+        warning = self._join_warnings(warning, llm_result.error)
         return RagAnswer(
-            answer=self._compose_answer(query, results),
+            answer=fallback,
             sources=self._sources(results),
             crawled=crawled,
             retrieved=len(results),
+            model_used=llm_result.model,
+            llm_used=False,
+            warning=warning,
         )
 
     async def ingest(self, query: str | None = None, limit: int = 100) -> int:
@@ -142,3 +182,7 @@ class SchemeRagService:
 
     def _sources(self, results: list[dict[str, Any]]) -> list[str]:
         return sorted({str(item["source_url"]) for item in results if item.get("source_url")})
+
+    def _join_warnings(self, first: str | None, second: str | None) -> str | None:
+        warnings = [warning for warning in [first, second] if warning]
+        return " ".join(warnings) if warnings else None

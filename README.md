@@ -28,6 +28,8 @@ storage/                 Structured JSONL storage and version metadata
 ```bash
 uv sync
 uv run playwright install
+ollama pull qwen2.5:14b
+uv run python scripts/check_qwen.py
 uv run python scripts/ingest_myscheme.py --query "student scholarship" --limit 50
 ```
 
